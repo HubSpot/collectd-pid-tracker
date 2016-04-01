@@ -1,5 +1,6 @@
 #!/usr/bin/python
-import os, re, time, sys
+import os, re, time, sys, glob
+import xml.etree.ElementTree as ET
 import psutil
 
 # metric names:
@@ -42,20 +43,49 @@ class PidTracker(object):
         if len(node.children) != 1:
           self.collectd.warning('pid-tracker plugin: PidFile missing or too many children: "%s' % node)
         else:
-          if self.pidfiles is None:
-            self.pidfiles = dict()
-          self.pidfiles[node.values[0]] = PidState(node.values[0], node.children[0].values[0])
+          self.add_pidfile(node.values[0], node.children[0].values[0])
       elif node.key == "Interval":
         self.interval = int(node.values[0])
+      elif node.key == "IncludePidFilesFromXml":
+        path_or_paths = glob.glob(node.values[0])
+        for path in path_or_paths:
+          if not os.path.isfile(path):
+            self.collectd.warning('pid-tracker plugin: skipping non-file path %s in parsing IncludePidFilesFromXml' % path)
+            continue
+
+          try:
+            root = ET.parse(path).getroot()
+            for tree in root.findall("PidFile"):
+              path = tree.find("Path")
+              plugin_instance = tree.find("PluginInstance")
+
+              if path is None or plugin_instance is None:
+                self.collectd.warning('pid-tracker plugin: included PidFile xml config improperly formed. Must include Path and PluginInstance children of root PidFile. path=%s, plugin_instance=%s' % (path, plugin_instance))
+                continue
+
+              self.add_pidfile(path.text, plugin_instance.text)
+          except Exception, e:
+            self.collectd.error('pid-tracker plugin: error parsing PidFile xml config for path %s, exception=%s' % (path, e))
+
       elif node.key == 'Verbose':
         self.verbose = bool(node.values[0])
       else:
         self.collectd.warning('pid-tracker plugin: Unknown config key: %s.' % (node.key))
 
-    if self.interval:
-      self.collectd.register_read(pt.read_callback, interval=self.interval)
+    if not self.pidfiles:
+      self.collectd.error('pid-tracker plugin: plugin loaded but no pidfiles found. Use PidFile or IncludePidFilesFromXml to add one or more to track')
     else:
-      self.collectd.register_read(pt.read_callback)
+      self.collectd.info('pid-tracker plugin: successfully loaded, tracking %d pid files' % len(self.pidfiles))
+      if self.interval:
+        self.collectd.register_read(pt.read_callback, interval=self.interval)
+      else:
+        self.collectd.register_read(pt.read_callback)
+
+  def add_pidfile(self, pid_file, plugin_instance):
+    if self.pidfiles is None:
+      self.pidfiles = dict()
+
+    self.pidfiles[pid_file] = PidState(pid_file, plugin_instance)
 
   def read_callback(self):
     if self.pidfiles:
