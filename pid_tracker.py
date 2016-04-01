@@ -47,7 +47,11 @@ class PidTracker(object):
       elif node.key == "Interval":
         self.interval = int(node.values[0])
       elif node.key == "IncludePidFilesFromXml":
-        path_or_paths = glob.glob(node.values[0])
+        source = node.values[0]
+        if os.path.isdir(source):
+          source = "%s/*" % (source[:-1] if source.endswith("/") else source)
+
+        path_or_paths = glob.glob(source)
         for path in path_or_paths:
           if not os.path.isfile(path):
             self.collectd.warning('pid-tracker plugin: skipping non-file path %s in parsing IncludePidFilesFromXml' % path)
