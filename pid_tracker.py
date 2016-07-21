@@ -98,11 +98,9 @@ class PidTracker(object):
       all_running = True
       for state in self.pidfiles.values():
         self.update_state(state)
-        all_running &= state.running
 
       for state in self.pidfiles.values():
-        extra_dimensions = "[all-services-running=%s,%s-running=%s]" % (all_running, state.plugin_instance, state.running)
-        self.create_metric(state, extra_dimensions) \
+        self.create_metric(state) \
           .dispatch()
     else:
       self.collectd.warning('pid-tracker plugin: skipping because no pid files ("PidFile" blocks) has been configured')
