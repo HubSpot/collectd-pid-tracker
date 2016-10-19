@@ -95,12 +95,21 @@ class PidTracker(object):
     if self.pidfiles:
       # update all states first so that we can report on whether all expected
       # services are running
-      all_running = True
+      any_running = False
       for state in self.pidfiles.values():
         self.update_state(state)
+        any_running |= state.running
+
+      # We send this dimension only on True state. This will cause SFX
+      # to store the key/value as a property on the host the first time any services
+      # on the host actually run. We can use this to exclude alerts for hosts
+      # which are understandably showing no pid/uptime because the processes have never 
+      # been launched there. We do make the assumption that a host is 'live' once *any* of
+      # the services it should run appear to be running.
+      extra_dimensions = "[services-launched=True]" if any_running else ""
 
       for state in self.pidfiles.values():
-        self.create_metric(state) \
+        self.create_metric(state, extra_dimensions=extra_dimensions) \
           .dispatch()
     else:
       self.collectd.warning('pid-tracker plugin: skipping because no pid files ("PidFile" blocks) has been configured')
