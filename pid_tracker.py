@@ -2,9 +2,11 @@
 import os, re, time, sys, glob
 import xml.etree.ElementTree as ET
 import psutil
+import string
 
+PLUGIN='pid-tracker'
 # metric names:
-uptime_metric    = 'process-uptime'
+UPTIME_METRIC    = 'process-uptime'
 
 class PidState(object):
   def __init__(self, pid_file=None, plugin_instance=None):
@@ -30,11 +32,13 @@ class PidState(object):
 
 
 class PidTracker(object):
-  def __init__(self, collectd, pidfiles=None, verbose=False, interval=None):
+  def __init__(self, collectd, pidfiles=None, pid_seen_notif=None, verbose=False, interval=None):
     self.collectd = collectd
     self.pidfiles = pidfiles
+    self.pid_seen_notif = pid_seen_notif
     self.verbose = verbose
     self.interval = interval
+    self.sent_pid_seen_notif = False
 
   def configure_callback(self, conf):
     """called by collectd to configure the plugin. This is called only once"""
@@ -73,6 +77,11 @@ class PidTracker(object):
 
       elif node.key == 'Verbose':
         self.verbose = bool(node.values[0])
+      elif node.key == 'Notification' and node.values[0] == 'pid_seen':
+        if len(node.children) != 5:
+          self.collectd.warning("pid-tracker plugin: Notification for 'pid_seen' requires all 5 child properties. No notifications will be sent")
+        else:
+          self.pid_seen_notif = self.create_notification(node.values[0], node.children)
       else:
         self.collectd.warning('pid-tracker plugin: Unknown config key: %s.' % (node.key))
 
@@ -91,6 +100,36 @@ class PidTracker(object):
 
     self.pidfiles[pid_file] = PidState(pid_file, plugin_instance)
 
+  def create_notification(self, notification_name, node_children):
+    for prop in node_children:
+      if prop.key == "PluginInstance":
+        plugin_instance = prop.values[0]
+      elif prop.key == "Type":
+        type = prop.values[0]
+      elif prop.key == "TypeInstance":
+        type_instance = prop.values[0]
+      elif prop.key == "Severity":
+        if string.lower(prop.values[0]) == "okay":
+            severity = 4
+        elif string.lower(prop.values[0]) == "warning":
+            severity = 2
+        elif string.lower(prop.values[0]) == "failure":
+            severity = 1
+      elif prop.key == "Message":
+        message = prop.values[0]
+      else:
+        self.collectd.error("pid-tracker plugin: Notification for '%s' is improperly formed. See documentation. No notifications will be sent" % notification_name)
+        return None
+
+    self.log_verbose('Sending notification [plugin=%s, plugin_instance=%s, type=%s, type_instance=%s, severity=%s, message=%s]' % (PLUGIN, plugin_instance, type, type_instance, severity, message))
+    return self.collectd.Notification(
+      plugin=PLUGIN,
+      plugin_instance=plugin_instance,
+      type=type,
+      type_instance=type_instance,
+      severity=severity,
+      message=message)
+
   def read_callback(self):
     if self.pidfiles:
       # update all states first so that we can report on whether all expected
@@ -100,16 +139,12 @@ class PidTracker(object):
         self.update_state(state)
         any_running |= state.running
 
-      # We send this dimension only on True state. This will cause SFX
-      # to store the key/value as a property on the host the first time any services
-      # on the host actually run. We can use this to exclude alerts for hosts
-      # which are understandably showing no pid/uptime because the processes have never 
-      # been launched there. We do make the assumption that a host is 'live' once *any* of
-      # the services it should run appear to be running.
-      extra_dimensions = "[services-launched=True]" if any_running else ""
+      if any_running and self.pid_seen_notif and not self.sent_pid_seen_notif:
+        self.pid_seen_notif.dispatch()
+        self.sent_pid_seen_notif = True
 
       for state in self.pidfiles.values():
-        self.create_metric(state, extra_dimensions=extra_dimensions) \
+        self.create_metric(state) \
           .dispatch()
     else:
       self.collectd.warning('pid-tracker plugin: skipping because no pid files ("PidFile" blocks) has been configured')
@@ -131,12 +166,12 @@ class PidTracker(object):
           self.collectd.debug('pid-tracker plugin: pid for pidfile does not point at running process. PidFile=%s, pid=%s. Exception=%s' % (state.pid_file, pid, e))
 
   def create_metric(self, pid_state, extra_dimensions=""):
-    self.log_verbose('Sending value counter.%s[plugin_instance=%s]=%s, extra_dimensions: %s' % (uptime_metric, pid_state.plugin_instance, pid_state.uptime, extra_dimensions))
+    self.log_verbose('Sending value counter.%s[plugin_instance=%s]=%s, extra_dimensions: %s' % (UPTIME_METRIC, pid_state.plugin_instance, pid_state.uptime, extra_dimensions))
     return self.collectd.Values(
-      plugin='pid-tracker', 
+      plugin=PLUGIN,
       plugin_instance=pid_state.plugin_instance,
       type="counter", 
-      type_instance="%s%s" % (uptime_metric, extra_dimensions),
+      type_instance="%s%s" % (UPTIME_METRIC, extra_dimensions),
       values=[pid_state.uptime])
 
   def log_verbose(self, msg):
@@ -150,6 +185,7 @@ class PidTracker(object):
 class CollectdMock(object):
   def __init__(self, plugin):
     self.value_mock = CollectdValuesMock
+    self.notification_mock = CollectdNotificationMock
     self.plugin = plugin
 
   def info(self, msg):
@@ -168,6 +204,9 @@ class CollectdMock(object):
   def Values(self, plugin=None, plugin_instance=None, type=None, type_instance=None, values=None):
     return (self.value_mock)()
 
+  def Notification(self, plugin=None, plugin_instance=None, type=None, type_instance=None, severity=None, message=None):
+    return (self.notification_mock)()
+
 class CollectdValuesMock(object):
 
   def dispatch(self):
@@ -179,6 +218,18 @@ class CollectdValuesMock(object):
       if not name.startswith('_') and name is not 'dispatch':
         attrs.append("%s=%s" % (name, getattr(self, name)))
     return "<CollectdValues %s>" % (' '.join(attrs))
+
+class CollectdNotificationMock(object):
+
+  def dispatch(self):
+        print self
+
+  def __str__(self):
+    attrs = []
+    for name in dir(self):
+      if not name.startswith('_') and name is not 'dispatch':
+        attrs.append("%s=%s" % (name, getattr(self, name)))
+    return "<CollectdNotification %s>" % (' '.join(attrs))
 
 if __name__ == '__main__':
   if len(sys.argv) < 3 or (len(sys.argv) - 1) % 2 != 0 :
