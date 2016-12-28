@@ -10,6 +10,9 @@ UPTIME_METRIC        = 'process-uptime'
 RSS_METRIC           = 'process.rss.bytes'
 SHARED_MEM_METRIC    = 'process.shared-mem.bytes'
 
+def parse_bool(val):
+  return True if val.__str__() in ['True', 'true'] else False
+
 class PidState(object):
   def __init__(self, pid_file=None, plugin_instance=None, collect_mem_stats=False):
     self.pid_file = pid_file
@@ -62,7 +65,7 @@ class PidTracker(object):
             if child_node.key == 'PluginInstance':
               plugin_instance = child_node.values[0]
             elif child_node.key == 'CollectMemStats':
-              collect_mem_stats = True if child_node.values[0].__str__() in ['True', 'true'] else False
+              collect_mem_stats = parse_bool(child_node.values[0])
 
           self.add_pidfile(node.values[0], plugin_instance, collect_mem_stats)
 
@@ -86,10 +89,10 @@ class PidTracker(object):
               plugin_instance = tree.find("PluginInstance")
 
               collect_mem_stats_node = tree.find("CollectMemStats")
-              if collect_mem_stats_node is not None and collect_mem_stats_node.text in ['True', 'true']:
-                collect_mem_stats = True
-              else:
+              if collect_mem_stats_node is None:
                 collect_mem_stats = False
+              else:
+                collect_mem_stats = parse_bool(collect_mem_stats_node.text)
 
               if path is None or plugin_instance is None:
                 self.collectd.warning('pid-tracker plugin: included PidFile xml config improperly formed. Must include Path and PluginInstance children of root PidFile. path=%s, plugin_instance=%s' % (path, plugin_instance))
@@ -100,7 +103,7 @@ class PidTracker(object):
             self.collectd.error('pid-tracker plugin: error parsing PidFile xml config for path %s, exception=%s' % (path, e))
 
       elif node.key == 'Verbose':
-        self.verbose = True if node.values[0].__str__() in ['True', 'true'] else False
+        self.verbose = parse_bool(node.values[0])
       elif node.key == 'Notification' and node.values[0] == 'pid_seen':
         if len(node.children) != 5:
           self.collectd.warning("pid-tracker plugin: Notification for 'pid_seen' requires all 5 child properties. No notifications will be sent")
@@ -288,7 +291,7 @@ if __name__ == '__main__':
   pidfiles = dict()
   for i in range(len(args) / 3):
     curr = i * 3
-    collect_mem_stats = True if args[curr+2] in ['True', 'true'] else False
+    collect_mem_stats = parse_bool(args[curr+2])
     pidfiles[args[curr]] = PidState(args[curr], args[curr+1], collect_mem_stats)
     print "pidstate=%s\n" % (pidfiles[args[curr]])
 
