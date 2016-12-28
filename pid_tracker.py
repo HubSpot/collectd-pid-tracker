@@ -204,7 +204,7 @@ class PidTracker(object):
       values=[pid_state.uptime]).dispatch()
 
     print "dispatching metrics %s\n" % (pid_state.collect_mem_stats)
-    if pid_state.collect_mem_stats:
+    if pid_state.running and pid_state.collect_mem_stats:
       self.log_verbose("dispatching rss=%d\n" % (pid_state.rss))
       self.collectd.Values(
         plugin=PLUGIN,
