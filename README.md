@@ -34,6 +34,7 @@ The expected format of the xml file is as follows:
   <PidFile>
     <Path>/path/to/two.pid</Path>
     <PluginInstance>two</PluginInstance>
+    <CollectMemStats>true</CollectMemStats>
   </PidFile>
 </PidFiles>
 ```
@@ -46,3 +47,10 @@ Note: It's unfortunate to need to use XML here instead of collectd's configurati
 
 - **`Interval`**: Specify an interval in seconds, if you want to run this at a different interval than globally
 - **`Verbose`**: if `true`, print verbose logging (`false`).
+- **`CollectMemStats`**: Add as a pid file parameter with `true` to send the RSS and Shared Memory byte sizes
+
+##### Resulting metrics
+
+- `counter.process-uptime`
+- `gauge.process.rss.bytes` if being collected
+- `gauge.process.shared-memory.bytes` if being collected

@@ -6,26 +6,36 @@ import string
 
 PLUGIN='pid-tracker'
 # metric names:
-UPTIME_METRIC    = 'process-uptime'
+UPTIME_METRIC        = 'process-uptime'
+RSS_METRIC           = 'process.rss.bytes'
+SHARED_MEM_METRIC    = 'process.shared-mem.bytes'
+
+def parse_bool(val):
+  return True if val.__str__() in ['True', 'true'] else False
 
 class PidState(object):
-  def __init__(self, pid_file=None, plugin_instance=None):
+  def __init__(self, pid_file=None, plugin_instance=None, collect_mem_stats=False):
     self.pid_file = pid_file
     self.plugin_instance = plugin_instance
+    self.collect_mem_stats = collect_mem_stats
     self.running = False
     self.uptime = 0
+    self.rss = 0
+    self.shared_mem = 0
 
   def set_down(self):
     self.running = False
     self.uptime = 0
+    self.rss = 0
+    self.shared_mem = 0
 
   def set_up(self, uptime):
     self.running = True
     self.uptime = uptime
 
   def __str__(self):
-    return "pid_file=%s, plugin_instance=%s, running=%s, uptime=%s" % \
-      (self.pid_file, self.plugin_instance, self.running, self.uptime)
+    return "pid_file=%s, plugin_instance=%s, running=%s, uptime=%s, collect_mem_stats=%s, rss=%d, shared_mem=%d" % \
+      (self.pid_file, self.plugin_instance, self.running, self.uptime, self.collect_mem_stats, self.rss, self.shared_mem)
 
   def __repr__(self):
     return "PidState[%s]" % self.__str__()
@@ -44,10 +54,21 @@ class PidTracker(object):
     """called by collectd to configure the plugin. This is called only once"""
     for node in conf.children:
       if node.key == 'PidFile':
-        if len(node.children) != 1:
+        if len(node.children) == 0:
           self.collectd.warning('pid-tracker plugin: PidFile missing or too many children: "%s' % node)
+        elif len(node.children) > 2:
+          self.collectd.warning('pid-tracker plugin: PidFile has too many children: "%s' % node)
         else:
-          self.add_pidfile(node.values[0], node.children[0].values[0])
+          plugin_instance = None
+          collect_mem_stats = False
+          for child_node in node.children:
+            if child_node.key == 'PluginInstance':
+              plugin_instance = child_node.values[0]
+            elif child_node.key == 'CollectMemStats':
+              collect_mem_stats = parse_bool(child_node.values[0])
+
+          self.add_pidfile(node.values[0], plugin_instance, collect_mem_stats)
+
       elif node.key == "Interval":
         self.interval = int(node.values[0])
       elif node.key == "IncludePidFilesFromXml":
@@ -67,16 +88,22 @@ class PidTracker(object):
               path = tree.find("Path")
               plugin_instance = tree.find("PluginInstance")
 
+              collect_mem_stats_node = tree.find("CollectMemStats")
+              if collect_mem_stats_node is None:
+                collect_mem_stats = False
+              else:
+                collect_mem_stats = parse_bool(collect_mem_stats_node.text)
+
               if path is None or plugin_instance is None:
                 self.collectd.warning('pid-tracker plugin: included PidFile xml config improperly formed. Must include Path and PluginInstance children of root PidFile. path=%s, plugin_instance=%s' % (path, plugin_instance))
                 continue
 
-              self.add_pidfile(path.text, plugin_instance.text)
+              self.add_pidfile(path.text, plugin_instance.text, collect_mem_stats)
           except Exception, e:
             self.collectd.error('pid-tracker plugin: error parsing PidFile xml config for path %s, exception=%s' % (path, e))
 
       elif node.key == 'Verbose':
-        self.verbose = bool(node.values[0])
+        self.verbose = parse_bool(node.values[0])
       elif node.key == 'Notification' and node.values[0] == 'pid_seen':
         if len(node.children) != 5:
           self.collectd.warning("pid-tracker plugin: Notification for 'pid_seen' requires all 5 child properties. No notifications will be sent")
@@ -94,11 +121,12 @@ class PidTracker(object):
       else:
         self.collectd.register_read(pt.read_callback)
 
-  def add_pidfile(self, pid_file, plugin_instance):
+  def add_pidfile(self, pid_file, plugin_instance, collect_mem_stats):
     if self.pidfiles is None:
       self.pidfiles = dict()
 
-    self.pidfiles[pid_file] = PidState(pid_file, plugin_instance)
+    self.pidfiles[pid_file] = PidState(pid_file, plugin_instance, collect_mem_stats)
+    self.collectd.info("pid-tracker plugin: adding pidfile=%s" % (self.pidfiles[pid_file]))
 
   def create_notification(self, notification_name, node_children):
     for prop in node_children:
@@ -144,10 +172,10 @@ class PidTracker(object):
         self.sent_pid_seen_notif = True
 
       for state in self.pidfiles.values():
-        self.create_metric(state) \
-          .dispatch()
+        self.dispatch_metrics(state)
+
     else:
-      self.collectd.warning('pid-tracker plugin: skipping because no pid files ("PidFile" blocks) has been configured')
+      self.collectd.warning('pid-tracker plugin: skipping because no pid files ("PidFile" blocks) have been configured')
 
   def update_state(self, state):
     if os.path.exists(state.pid_file):
@@ -161,18 +189,40 @@ class PidTracker(object):
         try:
           process = psutil.Process(int(pid))
           state.set_up((time.time() - process.create_time) * 1000)
+
+          meminfo = process.get_ext_memory_info()
+          state.rss = meminfo.rss
+          state.shared_mem = meminfo.shared
         except Exception, e:
           state.set_down()
           self.collectd.debug('pid-tracker plugin: pid for pidfile does not point at running process. PidFile=%s, pid=%s. Exception=%s' % (state.pid_file, pid, e))
 
-  def create_metric(self, pid_state, extra_dimensions=""):
+  def dispatch_metrics(self, pid_state, extra_dimensions=""):
     self.log_verbose('Sending value counter.%s[plugin_instance=%s]=%s, extra_dimensions: %s' % (UPTIME_METRIC, pid_state.plugin_instance, pid_state.uptime, extra_dimensions))
-    return self.collectd.Values(
+    self.collectd.Values(
       plugin=PLUGIN,
       plugin_instance=pid_state.plugin_instance,
       type="counter", 
       type_instance="%s%s" % (UPTIME_METRIC, extra_dimensions),
-      values=[pid_state.uptime])
+      values=[pid_state.uptime]).dispatch()
+
+    print "dispatching metrics %s\n" % (pid_state.collect_mem_stats)
+    if pid_state.running and pid_state.collect_mem_stats:
+      self.log_verbose("dispatching rss=%d\n" % (pid_state.rss))
+      self.collectd.Values(
+        plugin=PLUGIN,
+        plugin_instance=pid_state.plugin_instance,
+        type="gauge",
+        type_instance="%s%s" % (RSS_METRIC, extra_dimensions),
+        values=[pid_state.rss]).dispatch()
+
+      self.log_verbose("dispatching shared_mem=%d\n" % (pid_state.shared_mem))
+      self.collectd.Values(
+        plugin=PLUGIN,
+        plugin_instance=pid_state.plugin_instance,
+        type="gauge",
+        type_instance="%s%s" % (SHARED_MEM_METRIC, extra_dimensions),
+        values=[pid_state.shared_mem]).dispatch()
 
   def log_verbose(self, msg):
     if self.verbose:
@@ -232,16 +282,18 @@ class CollectdNotificationMock(object):
     return "<CollectdNotification %s>" % (' '.join(attrs))
 
 if __name__ == '__main__':
-  if len(sys.argv) < 3 or (len(sys.argv) - 1) % 2 != 0 :
-    print "Must pass one or more pidfile + process_name pair"
-    print "Usage: python pid_tracker.py /path/to/pidfile.pid process_name[ /path/to/another/pidfile.pid another_process_name[ etc...]]"
+  if len(sys.argv) < 4 or (len(sys.argv) - 1) % 3 != 0 :
+    print "Must pass one or more pidfile + process_name + collect_mem_stat_bool tuples"
+    print "Usage: python pid_tracker.py /path/to/pidfile.pid process_name true|false [ /path/to/another/pidfile.pid another_process_name true|false [ etc...]]"
     sys.exit(1)
 
   args = sys.argv[1:]
   pidfiles = dict()
-  for i in range(len(args) - 2):
-    curr = i * 2
-    pidfiles[args[curr]] = PidState(args[curr], args[curr+1])
+  for i in range(len(args) / 3):
+    curr = i * 3
+    collect_mem_stats = parse_bool(args[curr+2])
+    pidfiles[args[curr]] = PidState(args[curr], args[curr+1], collect_mem_stats)
+    print "pidstate=%s\n" % (pidfiles[args[curr]])
 
 
   collectd = CollectdMock('pid_tracker')
