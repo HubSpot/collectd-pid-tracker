@@ -35,6 +35,7 @@ The expected format of the xml file is as follows:
     <Path>/path/to/two.pid</Path>
     <PluginInstance>two</PluginInstance>
     <CollectMemStats>true</CollectMemStats>
+    <MemStatsInterval>60</MemStatsInterval>
   </PidFile>
 </PidFiles>
 ```
@@ -48,6 +49,7 @@ Note: It's unfortunate to need to use XML here instead of collectd's configurati
 - **`Interval`**: Specify an interval in seconds, if you want to run this at a different interval than globally
 - **`Verbose`**: if `true`, print verbose logging (`false`).
 - **`CollectMemStats`**: Add as a pid file parameter with `true` to send the RSS and Shared Memory byte sizes
+- **`MemStatsInterval`**: Add as a pid file parameter in seconds, sets the requested time interval to collect memory stats. Since the Interval parameter specifies when metrics can be collected, this value should be an even multiple of the Interval parameter.
 
 ##### Resulting metrics
 

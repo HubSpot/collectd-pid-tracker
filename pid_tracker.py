@@ -14,10 +14,12 @@ def parse_bool(val):
   return True if val.__str__() in ['True', 'true'] else False
 
 class PidState(object):
-  def __init__(self, pid_file=None, plugin_instance=None, collect_mem_stats=False):
+  def __init__(self, pid_file=None, plugin_instance=None, collect_mem_stats=False, mem_stats_interval=None):
     self.pid_file = pid_file
     self.plugin_instance = plugin_instance
     self.collect_mem_stats = collect_mem_stats
+    self.mem_stats_interval = mem_stats_interval
+    self.interval_counter = 0
     self.running = False
     self.uptime = 0
     self.rss = 0
@@ -34,8 +36,8 @@ class PidState(object):
     self.uptime = uptime
 
   def __str__(self):
-    return "pid_file=%s, plugin_instance=%s, running=%s, uptime=%s, collect_mem_stats=%s, rss=%d, shared_mem=%d" % \
-      (self.pid_file, self.plugin_instance, self.running, self.uptime, self.collect_mem_stats, self.rss, self.shared_mem)
+    return "pid_file=%s, plugin_instance=%s, running=%s, uptime=%s, collect_mem_stats=%s, mem_stats_interval=%s, rss=%d, shared_mem=%d" % \
+      (self.pid_file, self.plugin_instance, self.running, self.uptime, self.collect_mem_stats, self.mem_stats_interval, self.rss, self.shared_mem)
 
   def __repr__(self):
     return "PidState[%s]" % self.__str__()
@@ -61,13 +63,16 @@ class PidTracker(object):
         else:
           plugin_instance = None
           collect_mem_stats = False
+          mem_stats_interval = None
           for child_node in node.children:
             if child_node.key == 'PluginInstance':
               plugin_instance = child_node.values[0]
             elif child_node.key == 'CollectMemStats':
               collect_mem_stats = parse_bool(child_node.values[0])
+            elif child_node.key == 'MemStatsInterval':
+              mem_stats_interval = int(child_node.values[0])
 
-          self.add_pidfile(node.values[0], plugin_instance, collect_mem_stats)
+          self.add_pidfile(node.values[0], plugin_instance, collect_mem_stats, mem_stats_interval)
 
       elif node.key == "Interval":
         self.interval = int(node.values[0])
@@ -94,11 +99,17 @@ class PidTracker(object):
               else:
                 collect_mem_stats = parse_bool(collect_mem_stats_node.text)
 
+              mem_stats_interval_node = tree.find("MemStatsInterval")
+              if collect_mem_stats_node is None:
+                mem_stats_interval = None
+              else:
+                mem_stats_interval = int(mem_stats_interval_node.text)
+
               if path is None or plugin_instance is None:
                 self.collectd.warning('pid-tracker plugin: included PidFile xml config improperly formed. Must include Path and PluginInstance children of root PidFile. path=%s, plugin_instance=%s' % (path, plugin_instance))
                 continue
 
-              self.add_pidfile(path.text, plugin_instance.text, collect_mem_stats)
+              self.add_pidfile(path.text, plugin_instance.text, collect_mem_stats, mem_stats_interval)
           except Exception, e:
             self.collectd.error('pid-tracker plugin: error parsing PidFile xml config for path %s, exception=%s' % (path, e))
 
@@ -121,11 +132,11 @@ class PidTracker(object):
       else:
         self.collectd.register_read(pt.read_callback)
 
-  def add_pidfile(self, pid_file, plugin_instance, collect_mem_stats):
+  def add_pidfile(self, pid_file, plugin_instance, collect_mem_stats, mem_stats_interval):
     if self.pidfiles is None:
       self.pidfiles = dict()
 
-    self.pidfiles[pid_file] = PidState(pid_file, plugin_instance, collect_mem_stats)
+    self.pidfiles[pid_file] = PidState(pid_file, plugin_instance, collect_mem_stats, mem_stats_interval)
     self.collectd.info("pid-tracker plugin: adding pidfile=%s" % (self.pidfiles[pid_file]))
 
   def create_notification(self, notification_name, node_children):
@@ -207,7 +218,7 @@ class PidTracker(object):
       values=[pid_state.uptime]).dispatch()
 
     print "dispatching metrics %s\n" % (pid_state.collect_mem_stats)
-    if pid_state.running and pid_state.collect_mem_stats:
+    if self.should_collect_mem_stats(pid_state):
       self.log_verbose("dispatching rss=%d\n" % (pid_state.rss))
       self.collectd.Values(
         plugin=PLUGIN,
@@ -223,6 +234,27 @@ class PidTracker(object):
         type="gauge",
         type_instance="%s%s" % (SHARED_MEM_METRIC, extra_dimensions),
         values=[pid_state.shared_mem]).dispatch()
+
+  def should_collect_mem_stats(self, pid_state):
+    return pid_state.running and pid_state.collect_mem_stats and self.is_mem_collection_interval(pid_state)
+
+  def is_mem_collection_interval(self, pid_state):
+    # Assume true if no intervals are specified
+    if self.interval is None or pid_state.mem_stats_interval is None:
+      return True
+
+    flag = False
+
+    # be sure to send metrics immediately at startup
+    if pid_state.interval_counter == 0:
+      flag = True
+
+    pid_state.interval_counter += 1
+
+    if pid_state.interval_counter >= (pid_state.mem_stats_interval / self.interval):
+      pid_state.interval_counter = 0
+
+    return flag
 
   def log_verbose(self, msg):
     if self.verbose:
