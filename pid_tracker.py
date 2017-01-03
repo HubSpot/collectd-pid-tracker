@@ -100,7 +100,7 @@ class PidTracker(object):
                 collect_mem_stats = parse_bool(collect_mem_stats_node.text)
 
               mem_stats_interval_node = tree.find("MemStatsInterval")
-              if collect_mem_interval_node is None:
+              if mem_stats_interval_node is None:
                 mem_stats_interval = None
               else:
                 mem_stats_interval = int(mem_stats_interval_node.text)
