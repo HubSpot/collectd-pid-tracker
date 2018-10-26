@@ -2,7 +2,7 @@
 
 A [CollectD](http://collectd.org) plugin to collect uptime value for pid files. Uses CollectD's [Python plugin](http://collectd.org/documentation/manpages/collectd-python.5.shtml).
 
-####Configuration
+#### Configuration
 
 ##### Adding pids to track
 
